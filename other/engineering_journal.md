@@ -34,8 +34,8 @@
 | Categoría | WRO 2026 Future Engineers — Self-Driving Cars |
 | País / Ciudad | Panamá |
 | Grupo de edad | 14-22 años |
-| Integrantes | [Nombre 1], [Nombre 2], [Nombre 3] |
-| Coach | [Nombre del coach] |
+| Integrantes | Jesus Delgado, Maria I. Acosta |
+| Coach | Carlos Delgado |
 | Repositorio GitHub | https://github.com/chuyedelgado/wro2026_CHUISA-ARCITEP |
 | Competencia objetivo principal | Regional Panamá — Julio 2026 |
 | Objetivo aspiracional | Clasificación a final internacional |

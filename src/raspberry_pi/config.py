@@ -115,3 +115,21 @@ class Config:
     # ── Safety ───────────────────────────────────────────────────────────────
     # If no valid sensor data is received for this many milliseconds, stop.
     COMM_TIMEOUT_MS = 500
+
+# ============================================================
+# RANGOS HSV DE COLOR  (formato OpenCV: H 0-179, S 0-255, V 0-255)
+# Calibrados con other/hsv_calibrator.py
+# Perfil: NORMAL | Luz: [ANOTA TU CONDICION, ej. artificial taller]
+# Fecha: [ANOTA LA FECHA]
+# ============================================================
+import numpy as np
+
+# VERDE — un solo rango (calibrado y verificado)
+GREEN_HSV_LOWER = np.array([35,  70,  50])
+GREEN_HSV_UPPER = np.array([85, 255, 255])
+
+# ROJO — DOBLE rango (vive en los dos extremos del Hue). PROVISIONAL: calibrar.
+RED_HSV_LOWER_1 = np.array([0,   70, 34])    # rango bajo (H ~0-10)
+RED_HSV_UPPER_1 = np.array([10,  255, 255])
+RED_HSV_LOWER_2 = np.array([170, 70, 34])    # rango alto (H ~170-179)
+RED_HSV_UPPER_2 = np.array([179, 255, 255])

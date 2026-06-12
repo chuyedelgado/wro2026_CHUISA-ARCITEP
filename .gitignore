@@ -1,0 +1,8 @@
+
+# Imagenes de calibracion/diagnostico (no recargar el repo)
+calib_images/
+calib_check/
+comparacion_*.jpg
+captura*.jpg
+__pycache__/
+*.pyc

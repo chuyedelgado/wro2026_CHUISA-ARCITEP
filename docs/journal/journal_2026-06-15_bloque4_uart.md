@@ -4,7 +4,7 @@
 
 ---
 
-## 2026-06-15 — Semana 1 · Bloque 4 (UART Pi ↔ Arduino) ✅ casi completo (ver pendientes)
+## 2026-06-15 — Semana 1 · Bloque 4 (UART Pi ↔ Arduino) ✅ COMPLETADO
 
 ### Conexión física con divisor de voltaje (protección de la Pi)
 - **Riesgo:** el Nano Every trabaja a 5 V y su pin TX manda 5 V; la Raspberry Pi 5 trabaja a 3.3 V y sus GPIO **NO toleran 5 V**. Conexión directa dañaría la Pi.
@@ -42,8 +42,18 @@
 - `src/raspberry_pi/uart_comm_test.py`: envío con checksum (semilla de `uart_comm.py`).
 
 ### Pendientes (cero datos inventados — marcar pendientes)
-- [ ] **Prueba sostenida de 10 minutos** de tráfico sin error de checksum (criterio del Hito S1 "UART 10 min sin error"). **AÚN NO REALIZADA.**
-- [ ] **Integrar la telemetría real** Arduino → Pi con formato `T<tof_l>,<tof_f>,<tof_r>,<yaw>,<enc>` (combinar los sensores del Bloque 3 con el UART). Hasta ahora el canal se probó con eco simple, no con datos de sensores.
+- [x] **Prueba sostenida de 10 minutos** de tráfico sin error de checksum: REALIZADA, sin un solo descarte ✅ (criterio del Hito S1 "UART 10 min sin error").
+- [x] **Telemetría real Arduino → Pi**: IMPLEMENTADA y verificada ✅. Formato actual `T<tof_izq>,<tof_der>,<yaw>*<checksum>` (lo que existe hoy). Verificado tapando cada ToF y girando: cada dato reacciona de forma independiente, sin descartes.
+
+### Telemetría — alcance actual y pendiente de ampliar
+- Formato enviado HOY: `T<tof_izq>,<tof_der>,<yaw>*<checksum>` (2 ToF + yaw).
+- La arquitectura define la versión completa `T<tof_l>,<tof_f>,<tof_r>,<yaw>,<enc>`. Faltan por integrar, cuando existan en el robot:
+  - [ ] 3er ToF (frontal) para detección de esquina/parada.
+  - [ ] Encoder (llega con el motor JGB37, aún no integrado).
+- Código: `src/arduino/telemetria_test.ino` (lee 2 ToF + MPU y envía con checksum); lado Pi en `src/raspberry_pi/`.
+
+### Estado
+- Bloque 4 CERRADO: enlace UART bidireccional, con checksum, failsafe, 10 min sin error y telemetría real verificada.
 
 ### Próximo
 - Cerrar las dos validaciones de arriba; luego, resto de la S1 (servo) y tareas en paralelo (CAD de soportes, campo).

@@ -38,8 +38,8 @@
 - **Checksum XOR vs CRC/sumas:** XOR es simple y suficiente para detectar corrupción de bytes en este enlace corto.
 
 ### Código
-- `src/arduino/uart_protocolo_test.ino`: recepción con checksum + failsafe (semilla de `main.ino`).
-- `src/raspberry_pi/uart_comm_test.py`: envío con checksum (semilla de `uart_comm.py`).
+- `other/tests/uart_protocolo_test/uart_protocolo_test.ino`: recepción con checksum + failsafe (semilla de `main.ino`).
+- `other/tests/uart_comm_test.py`: envío con checksum (semilla de `uart_comm.py`).
 
 ### Pendientes (cero datos inventados — marcar pendientes)
 - [x] **Prueba sostenida de 10 minutos** de tráfico sin error de checksum: REALIZADA, sin un solo descarte ✅ (criterio del Hito S1 "UART 10 min sin error").
@@ -50,7 +50,7 @@
 - La arquitectura define la versión completa `T<tof_l>,<tof_f>,<tof_r>,<yaw>,<enc>`. Faltan por integrar, cuando existan en el robot:
   - [ ] 3er ToF (frontal) para detección de esquina/parada.
   - [ ] Encoder (llega con el motor JGB37, aún no integrado).
-- Código: `src/arduino/telemetria_test.ino` (lee 2 ToF + MPU y envía con checksum); lado Pi en `src/raspberry_pi/`.
+- Código: `other/tests/telemetria_test/telemetria_test.ino` (lee 2 ToF + MPU y envía con checksum); lado Pi en `other/tests/telemetria_rx_test.py`.
 
 ### Estado
 - Bloque 4 CERRADO: enlace UART bidireccional, con checksum, failsafe, 10 min sin error y telemetría real verificada.

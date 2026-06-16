@@ -6,3 +6,4 @@ comparacion_*.jpg
 captura*.jpg
 __pycache__/
 *.pyc
+.DS_Store

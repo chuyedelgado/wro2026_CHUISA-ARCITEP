@@ -1,0 +1,63 @@
+// fsm_diagram.dot — Team CHUISA ARCITEP (WRO 2026 Future Engineers)
+// High-level finite state machine (Raspberry Pi) for Open & Obstacle challenges.
+// Render:  dot -Tsvg fsm_diagram.dot -o fsm_diagram.svg
+
+digraph fsm {
+  rankdir=TB;
+  graph [fontname="Helvetica", fontsize=15, labelloc="t",
+         label="CHUISA ARCITEP - High-level FSM (Raspberry Pi)  ·  Open & Obstacle\n12 corners = 3 laps.   Low-level Nano FSM: IDLE -> READY (after gyro calibration) -> RUN (at button).",
+         bgcolor="white", nodesep=0.5, ranksep=0.65, pad=0.4];
+  node [fontname="Helvetica", fontsize=11, shape=box, style="rounded,filled",
+        fillcolor="#cfe2f3", color="#1f4e79"];
+  edge [fontname="Helvetica", fontsize=9, color="#333333"];
+
+  start [shape=circle, width=0.22, label="", style=filled, fillcolor="black", color="black"];
+
+  INIT    [label="INIT\nsensor init · gyro bias\ncalibration (robot still)"];
+  WAIT    [label="WAIT_BUTTON"];
+  DETECT  [label="DETECT_DIR\ninfer CW/CCW from the 1st\norange/blue line (rule 9.9)"];
+  DRIVE   [label="DRIVE  -  wall-following (PID)\nObstacle: pillar setpoint offset\nRED -> pass RIGHT · GREEN -> pass LEFT", fillcolor="#d9e8f5"];
+  TURN    [label="TURN_90\nyaw-guided 90 deg turn\n(corner count ++)"];
+  CHECK   [shape=diamond, style=filled, fillcolor="#fff3cd", color="#bf9000",
+           label="12 corners?\n(= 3 laps)"];
+
+  STOPSEC [label="STOP_IN_SECTION  (Open)\nstop in finish section,\nimmobile >= 15 s", fillcolor="#e2f0d9", color="#38761d"];
+  FINDP   [label="FIND_PARKING  (Obstacle)\nlocate the two\nmagenta delimiters", fillcolor="#e2efda", color="#38761d"];
+  PARK    [label="PARK  (Obstacle)\nreverse-S, align\nparallel to wall", fillcolor="#e2efda", color="#38761d"];
+  DONE    [label="STOP / PARKED", fillcolor="#e2f0d9", color="#38761d", peripheries=2];
+
+  ESTOP    [label="ESTOP  (failsafe)\nreachable from ANY state\ncomm loss -> motor 0, steer center", fillcolor="#ffe0e0", color="#c00000"];
+  RECOVERY [label="RECOVERY\nwrong pillar side: correct BEFORE\ncrossing the radial line (App. A.5)", fillcolor="#fde9d9", color="#e69138"];
+
+  // ---- main flow ----
+  start  -> INIT;
+  INIT   -> WAIT    [label="ready"];
+  WAIT   -> DETECT  [label="button pressed\n(immediate move, 9.14)"];
+  DETECT -> DRIVE   [label="direction set (CW/CCW)"];
+  DRIVE  -> TURN    [label="corner: lateral ToF loses wall\nOR front ToF < threshold"];
+  TURN   -> CHECK   [label="turn complete (yaw)"];
+  CHECK  -> DRIVE   [label="no  ->  continue lap"];
+  CHECK  -> STOPSEC [label="yes + Open"];
+  CHECK  -> FINDP   [label="yes + Obstacle"];
+  STOPSEC-> DONE;
+  FINDP  -> PARK    [label="aligned"];
+  PARK   -> DONE    [label="parked"];
+
+  // ---- transversal states ----
+  DRIVE    -> RECOVERY [label="wrong side detected", color="#e69138", fontcolor="#e69138", style=dashed];
+  RECOVERY -> DRIVE    [label="corrected", color="#e69138", fontcolor="#e69138", style=dashed];
+  DRIVE    -> ESTOP    [label="failsafe (any state)", color="#c00000", fontcolor="#c00000", style=dashed];
+
+  // ---- legend ----
+  subgraph cluster_legend {
+    label="Legend";
+    fontsize=11; style="dashed"; color="#aaaaaa";
+    node [shape=box, style="filled,rounded", fontsize=10];
+    G1 [label="normal state", fillcolor="#cfe2f3", color="#1f4e79"];
+    G2 [label="terminal / goal", fillcolor="#e2f0d9", color="#38761d"];
+    G3 [label="decision", fillcolor="#fff3cd", color="#bf9000", shape=diamond];
+    G4 [label="failsafe", fillcolor="#ffe0e0", color="#c00000"];
+    G5 [label="recovery", fillcolor="#fde9d9", color="#e69138"];
+    G1 -> G2 -> G3 -> G4 -> G5 [style=invis];
+  }
+}

@@ -102,7 +102,15 @@ a shared rail creates a voltage conflict. The UBEC is set to 5 V for bench tests
 the motor rail; a single DPST DC-rated switch cuts both batteries with one action (rule 9.10).
 
 **[pending]** measured currents: Pi (avg/peak), servo (avg/stall @6 V), motor (run/stall) → glass-fuse
-rating; wiring diagram in `schemes/`.
+rating.
+
+The complete wiring and power architecture — power tree and signal/data tree, color-coded — is shown
+below. A single DPST switch cuts both batteries (rule 9.10); the 5 V (Pi) and 6 V (servo) rails are
+separated; the Arduino TX → Pi RX line passes through a 1 kΩ/2.2 kΩ divider (measured 3.294 V).
+
+![Wiring and power diagram](schemes/wiring_diagram.png)
+
+_Source: `schemes/wiring_diagram.dot` (editable; re-render with `dot -Tsvg`)._
 
 ---
 
@@ -148,8 +156,11 @@ the Arduino executes them with its own safety logic.
 
 **High-level FSM (Pi):**
 `INIT → WAIT_BUTTON → DETECT_DIR → DRIVE(open|obstacle) ⇄ TURN_90 → LAP_COUNT → (3 laps) → STOP/PARK`,
-with transversal `ESTOP` (failsafe) and `RECOVERY` (wrong-side-of-pillar correction). **[pending: FSM
-diagram in `schemes/`.]**
+with transversal `ESTOP` (failsafe) and `RECOVERY` (wrong-side-of-pillar correction), shown below:
+
+![High-level FSM](schemes/fsm_diagram.png)
+
+_Source: `schemes/fsm_diagram.dot` (editable; re-render with `dot -Tsvg`)._
 
 **Vision pipeline (320×240 @30 fps):** capture → fisheye undistort → BGR→HSV → ROI → color masks
 (red dual-range, green, orange, blue, magenta) → erode/dilate → contour filtering → centroid + bbox.
@@ -241,8 +252,9 @@ measured.
 | ToF ±3 mm @100 mm · gyro drift ~0.5°/min | ✅ measured |
 | UART protocol (checksum + failsafe, 10 min no error) | ✅ verified |
 | Arduino → Pi telemetry (2 ToF + yaw) | ✅ verified |
+| Wiring/power diagram + high-level FSM diagram (`schemes/`) | ✅ done |
 | Steering servo characterization | ⏳ pending (battery → UBEC) |
 | Chassis assembly, motor + encoder integration | ⏳ pending (hardware in transit) |
-| PID tuning table, FSM diagram, success metrics | ⏳ pending (requires driving robot) |
+| PID tuning table, success metrics | ⏳ pending (requires driving robot) |
 | Vehicle & team photos, challenge videos, CAD/STL | ⏳ pending (requires assembled robot) |
 

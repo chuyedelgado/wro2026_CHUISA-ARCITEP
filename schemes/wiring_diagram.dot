@@ -1,0 +1,91 @@
+// wiring_diagram.dot — Team CHUISA ARCITEP (WRO 2026 Future Engineers)
+// Wiring & power architecture (bench / Phase 1-A configuration).
+// Render:  dot -Tsvg wiring_diagram.dot -o wiring_diagram.svg
+// [TBD] = value pending measurement · [pending] = component not yet integrated.
+
+digraph wiring {
+  rankdir=LR;
+  graph [fontname="Helvetica", fontsize=15, labelloc="t",
+         label="CHUISA ARCITEP - Wiring & Power Diagram (WRO 2026 Future Engineers)\nBench config (Phase 1-A).  All modules share a COMMON GROUND (essential for UART and I2C).  [TBD] = pending measurement.",
+         nodesep=0.45, ranksep=1.0, splines=true, bgcolor="white", pad=0.4];
+  node [fontname="Helvetica", fontsize=11, shape=box, style="rounded,filled",
+        fillcolor="#f5f5f5", color="#888888"];
+  edge [fontname="Helvetica", fontsize=9, color="#333333"];
+
+  // ---------- Power source ----------
+  LiPoA [label="LiPo A · 3S\n11.1 V  (logic)", fillcolor="#ffe0e0", color="#c00000"];
+  LiPoB [label="LiPo B · 3S\n11.1 V  (motor)", fillcolor="#ffe0e0", color="#c00000"];
+  DPST  [label="DPST SWITCH\nONE switch cuts\nBOTH batteries\n(rule 9.10)", fillcolor="#fff3cd", color="#bf9000", penwidth=2];
+
+  // ---------- Protection / regulation ----------
+  Poly  [label="PolySwitch\nRXEF300  (3 A hold)", fillcolor="#fde9d9", color="#e69138"];
+  Fuse  [label="Glass fuse\n[rating TBD]", style="rounded,filled,dashed", fillcolor="#fde9d9", color="#e69138"];
+  Mini  [label="Mini560\n5 V fixed / 5 A", fillcolor="#e2f0d9", color="#38761d"];
+  UBEC  [label="UBEC\n6 V (set on bench)", fillcolor="#e2f0d9", color="#38761d"];
+  Cytron[label="Cytron MD10C\nmotor driver", fillcolor="#e2f0d9", color="#38761d"];
+
+  // ---------- Controllers ----------
+  Pi      [label="RASPBERRY PI 5\nvision + high-level FSM\n(needs 5 V)", fillcolor="#cfe2f3", color="#1f4e79", penwidth=2.2];
+  Arduino [label="ARDUINO NANO EVERY\nreal-time control + failsafe\n(5 V logic)", fillcolor="#cfe2f3", color="#1f4e79", penwidth=2.2];
+
+  // ---------- Sensors ----------
+  Camera [label="Camera IMX708\n152 deg fisheye", fillcolor="#d9d2e9", color="#674ea7"];
+  ToF1   [label="VL53L1X #1\n0x2A · XSHUT=D2", fillcolor="#d9d2e9", color="#674ea7"];
+  ToF2   [label="VL53L1X #2\n0x29 · XSHUT=D3", fillcolor="#d9d2e9", color="#674ea7"];
+  MPU    [label="MPU-6050 IMU\n0x68", fillcolor="#d9d2e9", color="#674ea7"];
+
+  // ---------- Actuators ----------
+  Servo [label="Servo LF-20MG\nsteering  (6 V)", fillcolor="#e2f0d9", color="#38761d"];
+  Motor [label="Motor JGB37-520\n12 V + Hall encoder", fillcolor="#e2f0d9", color="#38761d"];
+
+  // ---------- I/O ----------
+  Button [label="Start button\n-> GPIO  [pin TBD]"];
+  LED    [label="Status LED\n[pin TBD]"];
+
+  // ---------- Voltage divider ----------
+  Divider [label="Voltage divider\n1k + 2.2k\n5 V -> 3.294 V (measured)", fillcolor="#fff3cd", color="#bf9000"];
+
+  // ================= POWER edges =================
+  // red = battery (11.1 V / 12 V), green = 5 V, orange = 6 V
+  LiPoA -> DPST  [color="#c00000", penwidth=2.2, label="11.1 V"];
+  LiPoB -> DPST  [color="#c00000", penwidth=2.2, label="11.1 V"];
+  DPST  -> Poly  [color="#c00000", penwidth=2.2, label="A"];
+  DPST  -> UBEC  [color="#c00000", penwidth=2.2, label="A"];
+  DPST  -> Fuse  [color="#c00000", penwidth=2.2, label="B"];
+  Poly  -> Mini  [color="#c00000", penwidth=2.2];
+  Mini  -> Pi    [color="#38761d", penwidth=2.2, label="5 V / 5 A"];
+  UBEC  -> Servo [color="#e69138", penwidth=2.2, label="6 V"];
+  Fuse  -> Cytron[color="#c00000", penwidth=2.2];
+  Cytron-> Motor [color="#c00000", penwidth=2.2, label="12 V"];
+
+  // ================= DATA / SIGNAL edges =================
+  // blue = data/signal (UART, PWM, CSI), purple = I2C bus
+  Camera  -> Pi      [color="#1f4e79", penwidth=1.6, label="22-pin CSI"];
+  Pi      -> Arduino [color="#1f4e79", penwidth=1.6, label="UART  Pi-TX (pin8, 3.3 V) -> RX0"];
+  Arduino -> Divider [color="#1f4e79", penwidth=1.6, label="TX1 (5 V)"];
+  Divider -> Pi      [color="#1f4e79", penwidth=1.6, label="-> RX (pin10)  3.294 V"];
+  Arduino -> ToF1    [color="#674ea7", penwidth=1.6, label="I2C  (A4/A5)"];
+  Arduino -> ToF2    [color="#674ea7", penwidth=1.6];
+  Arduino -> MPU     [color="#674ea7", penwidth=1.6];
+  Arduino -> Cytron  [color="#1f4e79", penwidth=1.6, label="PWM + DIR"];
+  Arduino -> Servo   [color="#1f4e79", penwidth=1.6, label="PWM"];
+  Motor   -> Arduino [color="#1f4e79", penwidth=1.6, style=dashed, label="encoder A/B  [pending]"];
+  Button  -> Arduino [color="#1f4e79", penwidth=1.6];
+  LED     -> Arduino [color="#1f4e79", penwidth=1.6];
+
+  // ================= Legend =================
+  subgraph cluster_legend {
+    label="Legend";
+    fontsize=11;
+    style="dashed";
+    color="#aaaaaa";
+    node [shape=box, style="filled,rounded", fontsize=10];
+    L1 [label="Power 11.1 V / 12 V", fillcolor="#ffe0e0", color="#c00000"];
+    L2 [label="5 V rail", fillcolor="#e2f0d9", color="#38761d"];
+    L3 [label="6 V rail", fillcolor="#fde9d9", color="#e69138"];
+    L4 [label="Data / signal", fillcolor="#cfe2f3", color="#1f4e79"];
+    L5 [label="I2C bus", fillcolor="#d9d2e9", color="#674ea7"];
+    L6 [label="dashed = pending / TBD", fillcolor="white", color="#888888", style="dashed,rounded"];
+    L1 -> L2 -> L3 -> L4 -> L5 -> L6 [style=invis];
+  }
+}

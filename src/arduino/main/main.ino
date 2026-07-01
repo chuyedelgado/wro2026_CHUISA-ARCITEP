@@ -1,328 +1,274 @@
-/**
- * main.ino — WRO 2026 Future Engineers — CHUISA ARCITEP
- * ====================================================
- * Arduino Nano: Low-level controller.
- *
- * Responsibilities:
- *   1. Handle start button (Rule 9.11): wait in standby, signal Pi when pressed
- *   2. Read sensors: 2× VL53L1X Time-of-Flight (I2C), MPU-6050 IMU (I2C)
- *   3. Count encoder pulses (interrupt-driven)
- *   4. Control DC motor via TB6612FNG (PWM + direction pins)
- *   5. Control steering servo (PWM)
- *   6. Send sensor data to Raspberry Pi via UART at ~50Hz
- *   7. Receive steering/speed commands from Pi via UART
- *
- * Communication Protocol (UART 115200 baud):
- *   Receive:  "S<steering>,<speed>\n"
- *             steering: -100 (full left) to +100 (full right)
- *             speed:    -100 (full reverse) to +100 (full forward)
- *   Send:     "T<tof_l>,<tof_f>,<tof_r>,<yaw>,<enc>\n"
- *             "READY\n"  — setup complete
- *             "START\n"  — start button pressed
- *
- * Competition rules enforced:
- *   Rule 9.10: ONE power switch (hardware, not this code)
- *   Rule 9.11: ONE start button, vehicle waits in standby
- *   Rule 11.10: No wireless — WiFi/BT not used (Nano has none)
- *
- * Libraries required (install via Arduino Library Manager):
- *   - "SparkFun VL53L1X" by SparkFun Electronics
- *   - "MPU6050" by Electronic Cats (or Jeff Rowberg's i2cdevlib)
- *   - "Servo" (built-in)
- */
+// firmware_chuisa.ino — Controlador de bajo nivel. CHUISA ARCITEP, WRO 2026.
+// (TÚ completas los valores según nuestro mapa real)
 
 #include <Wire.h>
 #include <Servo.h>
-#include <SparkFun_VL53L1X.h>
-#include <MPU6050.h>
+#include <VL53L1X.h>          // Pololu
+#include <MPU6050_light.h>    // rfetick
 
-// ── Pin Definitions ──────────────────────────────────────────────────────────
-// Start button — Rule 9.11: the ONE permitted start button
-const uint8_t PIN_START_BTN   = 2;   // INT0 — interrupt-capable
+// --- Actuadores ---
+const uint8_t PIN_SERVO     = 9;
+const uint8_t PIN_MOTOR_DIR = 2;   // Cytron DIR
+const uint8_t PIN_MOTOR_PWM = 3;   // Cytron PWM
 
-// Steering servo
-const uint8_t PIN_SERVO        = 9;
+// --- Encoder ---
+const uint8_t PIN_ENC_A = 4;
+const uint8_t PIN_ENC_B = 5;
 
-// TB6612FNG motor driver
-const uint8_t PIN_MOTOR_IN1    = 5;   // Direction A
-const uint8_t PIN_MOTOR_IN2    = 6;   // Direction B
-const uint8_t PIN_MOTOR_PWM    = 3;   // Speed (PWM)
-const uint8_t PIN_STBY         = 4;   // Standby (active HIGH = enabled)
+// --- Sensores (XSHUT de los ToF) ---
+const uint8_t PIN_XSHUT1 = 7;
+const uint8_t PIN_XSHUT2 = 8;
+// I2C: A4 (SDA), A5 (SCL) — fijos por hardware
 
-// Encoder (channel A on interrupt pin)
-const uint8_t PIN_ENCODER_A    = 7;   // INT1 alternative — use PCINT if needed
+// --- Botón y LED ---
+const uint8_t PIN_BTN = A0;
+const uint8_t PIN_LED = A1;
 
-// VL53L1X XSHUT pins (used to assign unique I2C addresses at boot)
-const uint8_t PIN_TOF_XSHUT_L  = 10;
-const uint8_t PIN_TOF_XSHUT_F  = 11;
-// Right ToF: always-on, uses default address 0x29
+// --- Actuadores: límites (CALIBRAR los reales luego) ---
+const int SERVO_CENTER  = 1600;  // centro
+const int SERVO_LEFT    = 1400;  // steer -100  (conservador por ahora)
+const int SERVO_RIGHT   = 1800;  // steer +100  (conservador por ahora)
+const int MOTOR_MAX_PWM = 150;   // tope de PWM (de 255) — arranca bajo, sube con cuidado
 
-// ── Constants ────────────────────────────────────────────────────────────────
-const int SERVO_CENTER_US = 1500;     // Pulse width for straight-ahead (microseconds)
-const int SERVO_MAX_US    = 1900;     // Max right turn
-const int SERVO_MIN_US    = 1100;     // Max left turn
-const int MOTOR_MAX_PWM   = 200;      // Max PWM (out of 255) — limit top speed
-const int SEND_INTERVAL_MS = 20;      // Send sensor data every 20ms (~50Hz)
+Servo steeringServo;
+VL53L1X tof1, tof2;           // tof1 → 0x2A,  tof2 → 0x29
+MPU6050 mpu(Wire);            // 0x68
 
-// VL53L1X I2C addresses (must be unique)
-const uint8_t TOF_ADDR_RIGHT = 0x29;  // Default address (always-on)
-const uint8_t TOF_ADDR_LEFT  = 0x30;  // Reassigned at startup
-const uint8_t TOF_ADDR_FRONT = 0x31;  // Reassigned at startup
+// --- Lecturas de sensores ---
+int   distancia1 = 0;   // mm, ToF1 (0x2A)
+int   distancia2 = 0;   // mm, ToF2 (0x29)
+float yaw        = 0.0; // grados, del MPU
 
-// ── Objects ───────────────────────────────────────────────────────────────────
-Servo         steeringServo;
-SFEVL53L1X    tofLeft,  tofFront, tofRight;
-MPU6050       imu;
+volatile long encoderPulsos = 0;   // con signo: + adelante, - atrás
 
-// ── Volatile State ────────────────────────────────────────────────────────────
-volatile long     encoderPulses = 0;
-volatile bool     startPressed  = false;
+// --- Comandos recibidos de la Pi ---
+int  cmdSteer = 0;                 // último steer válido
+int  cmdSpeed = 0;                 // último speed válido
+unsigned long ultimoComandoMs = 0; // cuándo llegó el último comando válido
+const unsigned long FAILSAFE_MS = 200;  // tu decisión: 200 ms
 
-// ── Regular State ─────────────────────────────────────────────────────────────
-int   cmdSteering     = 0;    // -100 to +100, from Pi
-int   cmdSpeed        = 0;    // -100 to +100, from Pi
-int   distLeft        = 9999;
-int   distFront       = 9999;
-int   distRight       = 9999;
-float yawDegrees      = 0.0f;
-float gyroZBias       = 0.0f;
-unsigned long lastIMUMicros  = 0;
-unsigned long lastSendMillis = 0;
+enum Estado { IDLE, READY, RUN };
+Estado estado = IDLE;
 
-
-// ── Setup ────────────────────────────────────────────────────────────────────
-void setup() {
-  Serial.begin(115200);
+void initSensors() {
   Wire.begin();
-  Wire.setClock(400000UL);  // 400kHz I2C
+  Wire.setClock(400000);
 
-  // Pin modes
-  pinMode(PIN_START_BTN,  INPUT_PULLUP);
-  pinMode(PIN_MOTOR_IN1,  OUTPUT);
-  pinMode(PIN_MOTOR_IN2,  OUTPUT);
-  pinMode(PIN_MOTOR_PWM,  OUTPUT);
-  pinMode(PIN_STBY,       OUTPUT);
-  pinMode(PIN_TOF_XSHUT_L, OUTPUT);
-  pinMode(PIN_TOF_XSHUT_F, OUTPUT);
+  // --- Secuencia XSHUT (tu técnica validada) ---
+  pinMode(PIN_XSHUT1, OUTPUT);
+  pinMode(PIN_XSHUT2, OUTPUT);
+  digitalWrite(PIN_XSHUT1, LOW);
+  digitalWrite(PIN_XSHUT2, LOW);
+  delay(10);
 
-  // Motor driver: standby mode until start
-  digitalWrite(PIN_STBY, LOW);
-  analogWrite(PIN_MOTOR_PWM, 0);
-
-  // Steering servo: center position
-  steeringServo.attach(PIN_SERVO);
-  steeringServo.writeMicroseconds(SERVO_CENTER_US);
-
-  // Initialize ToF sensors with unique I2C addresses
-  setupToFSensors();
-
-  // Initialize IMU and calibrate gyro bias
-  setupIMU();
-
-  // Encoder interrupt
-  attachInterrupt(digitalPinToInterrupt(PIN_ENCODER_A), onEncoderPulse, RISING);
-
-  // Start button interrupt
-  attachInterrupt(digitalPinToInterrupt(PIN_START_BTN), onStartButton, FALLING);
-
-  Serial.println("READY");
-
-  // ── STANDBY: Wait for start button (Rule 9.11) ────────────────────────────
-  // Vehicle is in standby state. No movement. Servo at center. Motor stopped.
-  while (!startPressed) {
-    delay(10);  // Low-power wait
+  // ToF1 → encender y renombrar a 0x2A
+  pinMode(PIN_XSHUT1, INPUT);
+  delay(10);
+  if (tof1.init()) {
+    tof1.setAddress(0x2A);
+    tof1.setDistanceMode(VL53L1X::Short);   // modo corto: mejor precisión <1.3m
+    tof1.setMeasurementTimingBudget(50000); // 50ms
+    tof1.startContinuous(50);
+    Serial.println("ToF1 OK (0x2A)");
+  } else {
+    Serial.println("ERROR: ToF1 no responde");
   }
 
-  // Arm motor driver
-  digitalWrite(PIN_STBY, HIGH);
-  Serial.println("START");   // Signal Pi that we are starting
+  // ToF2 → encender, queda en 0x29
+  pinMode(PIN_XSHUT2, INPUT);
+  delay(10);
+  if (tof2.init()) {
+    tof2.setDistanceMode(VL53L1X::Short);
+    tof2.setMeasurementTimingBudget(50000);
+    tof2.startContinuous(50);
+    Serial.println("ToF2 OK (0x29)");
+  } else {
+    Serial.println("ERROR: ToF2 no responde");
+  }
 
-  lastIMUMicros  = micros();
-  lastSendMillis = millis();
-}
-
-
-// ── Main Loop ────────────────────────────────────────────────────────────────
-void loop() {
-  // 1. Parse incoming commands from Pi
-  parseSerial();
-
-  // 2. Read sensors
-  readToFSensors();
-  updateIMU();
-
-  // 3. Apply actuator commands
-  applySteering(cmdSteering);
-  applySpeed(cmdSpeed);
-
-  // 4. Send sensor packet to Pi at SEND_INTERVAL_MS
-  unsigned long now = millis();
-  if (now - lastSendMillis >= SEND_INTERVAL_MS) {
-    Serial.print("T");
-    Serial.print(distLeft);   Serial.print(",");
-    Serial.print(distFront);  Serial.print(",");
-    Serial.print(distRight);  Serial.print(",");
-    Serial.print(yawDegrees, 2); Serial.print(",");
-    Serial.println(encoderPulses);
-    lastSendMillis = now;
+  // MPU-6050 (0x68)
+  byte status = mpu.begin();
+  if (status == 0) {
+    Serial.println("MPU OK - calibrando, NO MOVER...");
+    delay(1000);
+    mpu.calcOffsets();   // calibra bias con el robot QUIETO
+    Serial.println("MPU calibrado");
+  } else {
+    Serial.print("ERROR: MPU status ");
+    Serial.println(status);
   }
 }
 
+void readSensors() {
+  // ToF: leer solo si hay dato nuevo (sin bloquear)
+  if (tof1.dataReady()) distancia1 = tof1.read(false);
+  if (tof2.dataReady()) distancia2 = tof2.read(false);
 
-// ── Actuator Control ─────────────────────────────────────────────────────────
-
-void applySteering(int value) {
-  // value: -100 (full left) to +100 (full right)
-  int pulseWidth = map(value, -100, 100, SERVO_MIN_US, SERVO_MAX_US);
-  pulseWidth     = constrain(pulseWidth, SERVO_MIN_US, SERVO_MAX_US);
-  steeringServo.writeMicroseconds(pulseWidth);
+  // MPU: hay que actualizarlo cada vuelta para que integre el yaw
+  mpu.update();
+  yaw = mpu.getAngleZ();
 }
 
-void applySpeed(int value) {
-  // value: -100 to +100
-  if (value == 0) {
+void applySteering(int steer) {
+  // steer: -100 (izq) .. +100 (der)
+  steer = constrain(steer, -100, 100);           // seguridad: nunca fuera de rango
+  int us = map(steer, -100, 100, SERVO_LEFT, SERVO_RIGHT);
+  steeringServo.writeMicroseconds(us);
+}
+
+void applySpeed(int speed) {
+  // speed: -100 (reversa) .. +100 (adelante), 0 = parar
+  speed = constrain(speed, -100, 100);
+  if (speed == 0) {                              // parada explícita
     analogWrite(PIN_MOTOR_PWM, 0);
     return;
   }
-  if (value > 0) {
-    digitalWrite(PIN_MOTOR_IN1, HIGH);
-    digitalWrite(PIN_MOTOR_IN2, LOW);
-  } else {
-    digitalWrite(PIN_MOTOR_IN1, LOW);
-    digitalWrite(PIN_MOTOR_IN2, HIGH);
-  }
-  int pwm = map(abs(value), 0, 100, 0, MOTOR_MAX_PWM);
-  analogWrite(PIN_MOTOR_PWM, constrain(pwm, 0, MOTOR_MAX_PWM));
+  digitalWrite(PIN_MOTOR_DIR, speed > 0 ? LOW : HIGH);  // LOW = adelante (según tu prueba)
+  int pwm = map(abs(speed), 0, 100, 0, MOTOR_MAX_PWM);
+  analogWrite(PIN_MOTOR_PWM, pwm);
 }
 
-
-// ── Serial Parsing ────────────────────────────────────────────────────────────
-
-void parseSerial() {
-  // Expected format: "S<steering>,<speed>\n"
-  if (Serial.available() == 0) return;
-
-  String line = Serial.readStringUntil('\n');
-  line.trim();
-
-  if (!line.startsWith("S")) return;
-
-  int commaIdx = line.indexOf(',');
-  if (commaIdx < 2) return;
-
-  int s = line.substring(1, commaIdx).toInt();
-  int v = line.substring(commaIdx + 1).toInt();
-
-  cmdSteering = constrain(s, -100, 100);
-  cmdSpeed    = constrain(v, -100, 100);
+// Calcula el XOR de todos los caracteres de un texto → un byte
+byte calcularChecksum(const char* datos, int longitud) {
+  byte chk = 0;
+  for (int i = 0; i < longitud; i++) {
+    chk ^= datos[i];     // ^= es "XOR y guarda"
+  }
+  return chk;
 }
-
-
-// ── Sensor Setup ─────────────────────────────────────────────────────────────
-
-void setupToFSensors() {
-  // Shut all sensors off via XSHUT, then bring up one at a time
-  // to assign unique I2C addresses before enabling the next.
-  // Right sensor has no XSHUT pin — it's always on at default 0x29.
-  // Technique: shut L and F down first, then address R.
-
-  digitalWrite(PIN_TOF_XSHUT_L, LOW);
-  digitalWrite(PIN_TOF_XSHUT_F, LOW);
-  delay(10);
-
-  // Init RIGHT sensor (already at 0x29)
-  if (!tofRight.begin()) {
-    Serial.println("ERR: ToF Right init failed");
-  }
-  tofRight.setDistanceModeShort();
-  tofRight.startRanging();
-
-  // Init LEFT sensor
-  digitalWrite(PIN_TOF_XSHUT_L, HIGH);
-  delay(10);
-  if (!tofLeft.begin()) {
-    Serial.println("ERR: ToF Left init failed");
-  }
-  tofLeft.setI2CAddress(TOF_ADDR_LEFT);
-  tofLeft.setDistanceModeShort();
-  tofLeft.startRanging();
-
-  // Init FRONT sensor
-  digitalWrite(PIN_TOF_XSHUT_F, HIGH);
-  delay(10);
-  if (!tofFront.begin()) {
-    Serial.println("ERR: ToF Front init failed");
-  }
-  tofFront.setI2CAddress(TOF_ADDR_FRONT);
-  tofFront.setDistanceModeShort();
-  tofFront.startRanging();
-}
-
-void setupIMU() {
-  imu.initialize();
-  if (!imu.testConnection()) {
-    Serial.println("ERR: IMU connection failed");
-    return;
-  }
-  // Calibrate gyro Z bias: collect 100 samples at rest
-  long sum = 0;
-  for (int i = 0; i < 100; i++) {
-    sum += imu.getRotationZ();
-    delay(3);
-  }
-  gyroZBias = (float)sum / 100.0f;
-  lastIMUMicros = micros();
-  Serial.print("IMU bias: ");
-  Serial.println(gyroZBias);
-}
-
-
-// ── Sensor Reading ────────────────────────────────────────────────────────────
-
-void readToFSensors() {
-  // Non-blocking read — only update if new data is ready
-  if (tofLeft.checkForDataReady()) {
-    int d = tofLeft.getDistance();
-    tofLeft.clearInterrupt();
-    if (d > 0) distLeft = d;
-  }
-  if (tofFront.checkForDataReady()) {
-    int d = tofFront.getDistance();
-    tofFront.clearInterrupt();
-    if (d > 0) distFront = d;
-  }
-  if (tofRight.checkForDataReady()) {
-    int d = tofRight.getDistance();
-    tofRight.clearInterrupt();
-    if (d > 0) distRight = d;
-  }
-}
-
-void updateIMU() {
-  unsigned long now = micros();
-  float dt = (float)(now - lastIMUMicros) / 1e6f;
-  lastIMUMicros = now;
-
-  // Gyro Z raw → degrees/sec (sensitivity: 131 LSB/°/s at ±250°/s range)
-  float gyroZ_dps = ((float)imu.getRotationZ() - gyroZBias) / 131.0f;
-
-  // Integrate to get heading (yaw)
-  yawDegrees += gyroZ_dps * dt;
-}
-
-
-// ── Interrupt Handlers ────────────────────────────────────────────────────────
 
 void onEncoderPulse() {
-  encoderPulses++;
+  // Se dispara en cada flanco de subida del canal A.
+  // Miramos B para saber la dirección:
+  if (digitalRead(PIN_ENC_B) == LOW) encoderPulsos--;   // un sentido
+  else                                encoderPulsos++;   // el otro
 }
 
-void onStartButton() {
-  // Debounce: ignore if pressed recently
-  static unsigned long lastPressMs = 0;
-  unsigned long now = millis();
-  if (now - lastPressMs > 200) {
-    startPressed  = true;
-    lastPressMs   = now;
+void enviarTelemetria() {
+  // 1. Armar el contenido en un buffer de texto
+  char buffer[48];
+  int n = snprintf(buffer, sizeof(buffer), "T%d,%d,%d,%ld",
+                   distancia1, distancia2, (int)yaw, encoderPulsos);
+
+  // 2. Calcular el checksum de ese contenido
+  byte chk = calcularChecksum(buffer, n);
+
+  // 3. Enviar por Serial1 (a la Pi): contenido * checksum \n
+  Serial1.print(buffer);
+  Serial1.print('*');
+  Serial1.println(chk);   // println agrega el \n final
+}
+
+void recibirComandos() {
+  // Formato esperado: "S<steer>,<speed>*<checksum>\n"
+  if (!Serial1.available()) return;
+
+  char buffer[48];
+  int n = Serial1.readBytesUntil('\n', buffer, sizeof(buffer) - 1);
+  if (n <= 0) return;
+  buffer[n] = '\0';                 // cierra el texto
+
+  // 1. Separar contenido y checksum en el '*'
+  char* asterisco = strchr(buffer, '*');
+  if (asterisco == NULL) return;    // mal formado: sin checksum
+  *asterisco = '\0';                // corta el buffer en el '*'
+  byte chkRecibido = atoi(asterisco + 1);
+
+  // 2. Verificar el checksum
+  byte chkCalculado = calcularChecksum(buffer, strlen(buffer));
+  if (chkCalculado != chkRecibido) return;   // corrupto → descartar
+
+  // 3. Parsear "S<steer>,<speed>"
+  if (buffer[0] != 'S') return;
+  char* coma = strchr(buffer, ',');
+  if (coma == NULL) return;
+  *coma = '\0';
+
+  cmdSteer = atoi(buffer + 1);      // desde después de la 'S'
+  cmdSpeed = atoi(coma + 1);        // desde después de la ','
+  ultimoComandoMs = millis();       // ¡llegó un comando VÁLIDO!
+}
+
+void aplicarComandosConFailsafe() {
+  if (millis() - ultimoComandoMs > FAILSAFE_MS) {
+    // La Pi se calló → PARAR por seguridad
+    applySpeed(0);
+    applySteering(0);
+  } else {
+    // Comunicación viva → ejecutar el último comando válido
+    applySteering(cmdSteer);
+    applySpeed(cmdSpeed);
+  }
+}
+
+bool botonPulsado() {
+  if (digitalRead(PIN_BTN) == HIGH) return false;  // en reposo, nada
+  delay(20);                                        // espera el rebote (solo en READY, robot quieto)
+  return (digitalRead(PIN_BTN) == LOW);             // ¿sigue pulsado? → válido
+}
+
+void actualizarLED() {
+  if (estado == RUN) {
+    digitalWrite(PIN_LED, HIGH);              // RUN → fijo
+  } else {
+    digitalWrite(PIN_LED, (millis() / 300) % 2);  // READY → parpadeo cada 300ms
+  }
+}
+
+void setup() {
+  // 1. Dos puertos serie
+  Serial.begin(115200);    // USB (depuración hacia la PC)
+  Serial1.begin(115200);   // UART hacia la Pi (D0/D1) — el del divisor
+
+  // 2. Pines de salida del motor
+  pinMode(PIN_MOTOR_DIR, OUTPUT);
+  pinMode(PIN_MOTOR_PWM, OUTPUT);
+  analogWrite(PIN_MOTOR_PWM, 0);     // motor PARADO (seguro)
+
+  // 3. Servo al centro
+  steeringServo.attach(PIN_SERVO);
+  steeringServo.writeMicroseconds(1500);   // centro (ajustaremos el real luego)
+
+  // 4. Botón y LED
+  pinMode(PIN_BTN, INPUT_PULLUP);    // botón: ALTO en reposo, BAJO al pulsar
+  pinMode(PIN_LED, OUTPUT);
+  digitalWrite(PIN_LED, LOW);
+
+  // 5. Aviso de que arrancó (por USB, para que TÚ lo veas)
+  Serial.println("Firmware iniciado - estado seguro");
+
+  initSensors();
+  pinMode(PIN_ENC_A, INPUT_PULLUP);
+  pinMode(PIN_ENC_B, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(PIN_ENC_A), onEncoderPulse, RISING);
+  estado = READY;
+  Serial.println("Estado: READY - esperando boton");
+
+}
+
+void loop() {
+  actualizarLED();
+
+  // Bloque de control a ~50 Hz
+  static unsigned long t = 0;
+  if (millis() - t >= 20) {
+    t = millis();
+
+    readSensors();
+    recibirComandos();      // siempre: drena el buffer y actualiza comandos
+    enviarTelemetria();     // la Pi siempre recibe datos
+
+    if (estado == READY) {
+      applySpeed(0);        // motor FORZADO a 0 (no se mueve aunque la Pi mande)
+      applySteering(0);
+      if (botonPulsado()) {
+        estado = RUN;
+        Serial.println("Estado: RUN - arrancando");
+        Serial1.println("START");   // avisa a la Pi (opcional)
+      }
+    }
+    else if (estado == RUN) {
+      aplicarComandosConFailsafe();   // ahora sí obedece (con failsafe)
+    }
   }
 }
